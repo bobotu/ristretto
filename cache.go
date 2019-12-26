@@ -24,8 +24,6 @@ import (
 	"errors"
 	"fmt"
 	"sync/atomic"
-
-	"github.com/dgraph-io/ristretto/z"
 )
 
 const (
@@ -48,11 +46,7 @@ type Cache struct {
 	// contention
 	setBuf chan *item
 	// onEvict is called for item evictions
-	onEvict func(uint64, uint64, interface{}, int64)
-	// KeyToHash function is used to customize the key hashing algorithm.
-	// Each key will be hashed using the provided function. If keyToHash value
-	// is not set, the default keyToHash function is used.
-	keyToHash func(interface{}) (uint64, uint64)
+	onEvict func(uint64, interface{}, int64)
 	// stop is used to stop the processItems goroutine
 	stop chan struct{}
 	// cost calculates cost from a value
@@ -94,11 +88,7 @@ type Config struct {
 	Metrics bool
 	// OnEvict is called for every eviction and passes the hashed key, value,
 	// and cost to the function.
-	OnEvict func(key, conflict uint64, value interface{}, cost int64)
-	// KeyToHash function is used to customize the key hashing algorithm.
-	// Each key will be hashed using the provided function. If keyToHash value
-	// is not set, the default keyToHash function is used.
-	KeyToHash func(key interface{}) (uint64, uint64)
+	OnEvict func(key uint64, value interface{}, cost int64)
 	// Cost evaluates a value and outputs a corresponding cost. This function
 	// is ran after Set is called for a new item or an item update with a cost
 	// param of 0.
@@ -115,11 +105,10 @@ const (
 
 // item is passed to setBuf so items can eventually be added to the cache
 type item struct {
-	flag     itemFlag
-	key      uint64
-	conflict uint64
-	value    interface{}
-	cost     int64
+	flag  itemFlag
+	key   uint64
+	value interface{}
+	cost  int64
 }
 
 // NewCache returns a new Cache instance and any configuration errors, if any.
@@ -134,17 +123,13 @@ func NewCache(config *Config) (*Cache, error) {
 	}
 	policy := newPolicy(config.NumCounters, config.MaxCost)
 	cache := &Cache{
-		store:     newStore(),
-		policy:    policy,
-		getBuf:    newRingBuffer(policy, config.BufferItems),
-		setBuf:    make(chan *item, setBufSize),
-		onEvict:   config.OnEvict,
-		keyToHash: config.KeyToHash,
-		stop:      make(chan struct{}),
-		cost:      config.Cost,
-	}
-	if cache.keyToHash == nil {
-		cache.keyToHash = z.KeyToHash
+		store:   newStore(),
+		policy:  policy,
+		getBuf:  newRingBuffer(policy, config.BufferItems),
+		setBuf:  make(chan *item, setBufSize),
+		onEvict: config.OnEvict,
+		stop:    make(chan struct{}),
+		cost:    config.Cost,
 	}
 	if config.Metrics {
 		cache.collectMetrics()
@@ -159,17 +144,16 @@ func NewCache(config *Config) (*Cache, error) {
 // Get returns the value (if any) and a boolean representing whether the
 // value was found or not. The value can be nil and the boolean can be true at
 // the same time.
-func (c *Cache) Get(key interface{}) (interface{}, bool) {
-	if c == nil || key == nil {
+func (c *Cache) Get(key uint64) (interface{}, bool) {
+	if c == nil {
 		return nil, false
 	}
-	keyHash, conflictHash := c.keyToHash(key)
-	c.getBuf.Push(keyHash)
-	value, ok := c.store.Get(keyHash, conflictHash)
+	c.getBuf.Push(key)
+	value, ok := c.store.Get(key)
 	if ok {
-		c.Metrics.add(hit, keyHash, 1)
+		c.Metrics.add(hit, key, 1)
 	} else {
-		c.Metrics.add(miss, keyHash, 1)
+		c.Metrics.add(miss, key, 1)
 	}
 	return value, ok
 }
@@ -183,21 +167,19 @@ func (c *Cache) Get(key interface{}) (interface{}, bool) {
 // To dynamically evaluate the items cost using the Config.Coster function, set
 // the cost parameter to 0 and Coster will be ran when needed in order to find
 // the items true cost.
-func (c *Cache) Set(key, value interface{}, cost int64) bool {
-	if c == nil || key == nil {
+func (c *Cache) Set(key uint64, value interface{}, cost int64) bool {
+	if c == nil {
 		return false
 	}
-	keyHash, conflictHash := c.keyToHash(key)
 	i := &item{
-		flag:     itemNew,
-		key:      keyHash,
-		conflict: conflictHash,
-		value:    value,
-		cost:     cost,
+		flag:  itemNew,
+		key:   key,
+		value: value,
+		cost:  cost,
 	}
 	// attempt to immediately update hashmap value and set flag to update so the
 	// cost is eventually updated
-	if c.store.Update(keyHash, conflictHash, i.value) {
+	if c.store.Update(key, i.value) {
 		i.flag = itemUpdate
 	}
 	// attempt to send item to policy
@@ -205,21 +187,19 @@ func (c *Cache) Set(key, value interface{}, cost int64) bool {
 	case c.setBuf <- i:
 		return true
 	default:
-		c.Metrics.add(dropSets, keyHash, 1)
+		c.Metrics.add(dropSets, key, 1)
 		return false
 	}
 }
 
 // Del deletes the key-value item from the cache if it exists.
-func (c *Cache) Del(key interface{}) {
-	if c == nil || key == nil {
+func (c *Cache) Del(key uint64) {
+	if c == nil {
 		return
 	}
-	keyHash, conflictHash := c.keyToHash(key)
 	c.setBuf <- &item{
-		flag:     itemDelete,
-		key:      keyHash,
-		conflict: conflictHash,
+		flag: itemDelete,
+		key:  key,
 	}
 }
 
@@ -264,13 +244,13 @@ func (c *Cache) processItems() {
 			case itemNew:
 				victims, added := c.policy.Add(i.key, i.cost)
 				if added {
-					c.store.Set(i.key, i.conflict, i.value)
+					c.store.Set(i.key, i.value)
 					c.Metrics.add(keyAdd, i.key, 1)
 				}
 				for _, victim := range victims {
-					victim.conflict, victim.value = c.store.Del(victim.key, 0)
+					victim.value = c.store.Del(victim.key)
 					if c.onEvict != nil {
-						c.onEvict(victim.key, victim.conflict, victim.value, victim.cost)
+						c.onEvict(victim.key, victim.value, victim.cost)
 					}
 				}
 
@@ -279,7 +259,7 @@ func (c *Cache) processItems() {
 
 			case itemDelete:
 				c.policy.Del(i.key) // Deals with metrics updates.
-				c.store.Del(i.key, i.conflict)
+				c.store.Del(i.key)
 			}
 		case <-c.stop:
 			return

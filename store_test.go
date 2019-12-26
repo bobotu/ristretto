@@ -2,49 +2,47 @@ package ristretto
 
 import (
 	"testing"
-
-	"github.com/dgraph-io/ristretto/z"
 )
 
 func TestStoreSetGet(t *testing.T) {
 	s := newStore()
-	key, conflict := z.KeyToHash(1)
-	s.Set(key, conflict, 2)
-	if val, ok := s.Get(key, conflict); (val == nil || !ok) || val.(int) != 2 {
+	key := uint64(1)
+	s.Set(key, 2)
+	if val, ok := s.Get(key); (val == nil || !ok) || val.(int) != 2 {
 		t.Fatal("set/get error")
 	}
-	s.Set(key, conflict, 3)
-	if val, ok := s.Get(key, conflict); (val == nil || !ok) || val.(int) != 3 {
+	s.Set(key, 3)
+	if val, ok := s.Get(key); (val == nil || !ok) || val.(int) != 3 {
 		t.Fatal("set/get overwrite error")
 	}
-	key, conflict = z.KeyToHash(2)
-	s.Set(key, conflict, 2)
-	if val, ok := s.Get(key, conflict); !ok || val.(int) != 2 {
+	key = uint64(2)
+	s.Set(key, 2)
+	if val, ok := s.Get(key); !ok || val.(int) != 2 {
 		t.Fatal("set/get nil key error")
 	}
 }
 
 func TestStoreDel(t *testing.T) {
 	s := newStore()
-	key, conflict := z.KeyToHash(1)
-	s.Set(key, conflict, 1)
-	s.Del(key, conflict)
-	if val, ok := s.Get(key, conflict); val != nil || ok {
+	key := uint64(1)
+	s.Set(key, 1)
+	s.Del(key)
+	if val, ok := s.Get(key); val != nil || ok {
 		t.Fatal("del error")
 	}
-	s.Del(2, 0)
+	s.Del(2)
 }
 
 func TestStoreClear(t *testing.T) {
 	s := newStore()
 	for i := uint64(0); i < 1000; i++ {
-		key, conflict := z.KeyToHash(i)
-		s.Set(key, conflict, i)
+		key := uint64(i)
+		s.Set(key, i)
 	}
 	s.Clear()
 	for i := uint64(0); i < 1000; i++ {
-		key, conflict := z.KeyToHash(i)
-		if val, ok := s.Get(key, conflict); val != nil || ok {
+		key := uint64(i)
+		if val, ok := s.Get(key); val != nil || ok {
 			t.Fatal("clear operation failed")
 		}
 	}
@@ -52,91 +50,63 @@ func TestStoreClear(t *testing.T) {
 
 func TestStoreUpdate(t *testing.T) {
 	s := newStore()
-	key, conflict := z.KeyToHash(1)
-	s.Set(key, conflict, 1)
-	if updated := s.Update(key, conflict, 2); !updated {
+	key := uint64(1)
+	s.Set(key, 1)
+	if updated := s.Update(key, 2); !updated {
 		t.Fatal("value should have been updated")
 	}
-	if val, ok := s.Get(key, conflict); val == nil || !ok {
+	if val, ok := s.Get(key); val == nil || !ok {
 		t.Fatal("value was deleted")
 	}
-	if val, ok := s.Get(key, conflict); val.(int) != 2 || !ok {
+	if val, ok := s.Get(key); val.(int) != 2 || !ok {
 		t.Fatal("value wasn't updated")
 	}
-	if !s.Update(key, conflict, 3) {
+	if !s.Update(key, 3) {
 		t.Fatal("value should have been updated")
 	}
-	if val, ok := s.Get(key, conflict); val.(int) != 3 || !ok {
+	if val, ok := s.Get(key); val.(int) != 3 || !ok {
 		t.Fatal("value wasn't updated")
 	}
-	key, conflict = z.KeyToHash(2)
-	if updated := s.Update(key, conflict, 2); updated {
+	key = uint64(2)
+	if updated := s.Update(key, 2); updated {
 		t.Fatal("value should not have been updated")
 	}
-	if val, ok := s.Get(key, conflict); val != nil || ok {
+	if val, ok := s.Get(key); val != nil || ok {
 		t.Fatal("value should not have been updated")
-	}
-}
-
-func TestStoreCollision(t *testing.T) {
-	s := newShardedMap()
-	s.shards[1].Lock()
-	s.shards[1].data[1] = storeItem{
-		key:      1,
-		conflict: 0,
-		value:    1,
-	}
-	s.shards[1].Unlock()
-	if val, ok := s.Get(1, 1); val != nil || ok {
-		t.Fatal("collision should return nil")
-	}
-	s.Set(1, 1, 2)
-	if val, ok := s.Get(1, 0); !ok || val == nil || val.(int) == 2 {
-		t.Fatal("collision should prevent Set update")
-	}
-	if s.Update(1, 1, 2) {
-		t.Fatal("collision should prevent Update")
-	}
-	if val, ok := s.Get(1, 0); !ok || val == nil || val.(int) == 2 {
-		t.Fatal("collision should prevent Update")
-	}
-	s.Del(1, 1)
-	if val, ok := s.Get(1, 0); !ok || val == nil {
-		t.Fatal("collision should prevent Del")
 	}
 }
 
 func BenchmarkStoreGet(b *testing.B) {
 	s := newStore()
-	key, conflict := z.KeyToHash(1)
-	s.Set(key, conflict, 1)
+	key := uint64(1)
+	s.Set(key, 1)
 	b.SetBytes(1)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.Get(key, conflict)
+			s.Get(key)
 		}
 	})
 }
 
 func BenchmarkStoreSet(b *testing.B) {
 	s := newStore()
-	key, conflict := z.KeyToHash(1)
+	key := uint64(1)
 	b.SetBytes(1)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.Set(key, conflict, 1)
+			s.Set(key, 1)
 		}
 	})
 }
 
 func BenchmarkStoreUpdate(b *testing.B) {
 	s := newStore()
-	key, conflict := z.KeyToHash(1)
-	s.Set(key, conflict, 1)
+	key := uint64(1)
+	s.Set(key, 1)
 	b.SetBytes(1)
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			s.Update(key, conflict, 2)
+			s.Update(key, 2)
 		}
 	})
 }

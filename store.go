@@ -20,12 +20,6 @@ import (
 	"sync"
 )
 
-type storeItem struct {
-	key      uint64
-	conflict uint64
-	value    interface{}
-}
-
 // store is the interface fulfilled by all hash map implementations in this
 // file. Some hash map implementations are better suited for certain data
 // distributions than others, so this allows us to abstract that out for use
@@ -34,15 +28,15 @@ type storeItem struct {
 // Every store is safe for concurrent usage.
 type store interface {
 	// Get returns the value associated with the key parameter.
-	Get(uint64, uint64) (interface{}, bool)
+	Get(uint64) (interface{}, bool)
 	// Set adds the key-value pair to the Map or updates the value if it's
 	// already present.
-	Set(uint64, uint64, interface{})
+	Set(uint64, interface{})
 	// Del deletes the key-value pair from the Map.
-	Del(uint64, uint64) (uint64, interface{})
+	Del(uint64) interface{}
 	// Update attempts to update the key with a new value and returns true if
 	// successful.
-	Update(uint64, uint64, interface{}) bool
+	Update(uint64, interface{}) bool
 	// Clear clears all contents of the store.
 	Clear()
 }
@@ -68,20 +62,20 @@ func newShardedMap() *shardedMap {
 	return sm
 }
 
-func (sm *shardedMap) Get(key, conflict uint64) (interface{}, bool) {
-	return sm.shards[key%numShards].Get(key, conflict)
+func (sm *shardedMap) Get(key uint64) (interface{}, bool) {
+	return sm.shards[key%numShards].Get(key)
 }
 
-func (sm *shardedMap) Set(key, conflict uint64, value interface{}) {
-	sm.shards[key%numShards].Set(key, conflict, value)
+func (sm *shardedMap) Set(key uint64, value interface{}) {
+	sm.shards[key%numShards].Set(key, value)
 }
 
-func (sm *shardedMap) Del(key, conflict uint64) (uint64, interface{}) {
-	return sm.shards[key%numShards].Del(key, conflict)
+func (sm *shardedMap) Del(key uint64) interface{} {
+	return sm.shards[key%numShards].Del(key)
 }
 
-func (sm *shardedMap) Update(key, conflict uint64, value interface{}) bool {
-	return sm.shards[key%numShards].Update(key, conflict, value)
+func (sm *shardedMap) Update(key uint64, value interface{}) bool {
+	return sm.shards[key%numShards].Update(key, value)
 }
 
 func (sm *shardedMap) Clear() {
@@ -92,90 +86,52 @@ func (sm *shardedMap) Clear() {
 
 type lockedMap struct {
 	sync.RWMutex
-	data map[uint64]storeItem
+	data map[uint64]interface{}
 }
 
 func newLockedMap() *lockedMap {
 	return &lockedMap{
-		data: make(map[uint64]storeItem),
+		data: make(map[uint64]interface{}),
 	}
 }
 
-func (m *lockedMap) Get(key, conflict uint64) (interface{}, bool) {
+func (m *lockedMap) Get(key uint64) (interface{}, bool) {
 	m.RLock()
 	item, ok := m.data[key]
 	m.RUnlock()
-	if !ok {
-		return nil, false
-	}
-	if conflict != 0 && (conflict != item.conflict) {
-		return nil, false
-	}
-	return item.value, true
+	return item, ok
 }
 
-func (m *lockedMap) Set(key, conflict uint64, value interface{}) {
+func (m *lockedMap) Set(key uint64, value interface{}) {
 	m.Lock()
-	item, ok := m.data[key]
-	if !ok {
-		m.data[key] = storeItem{
-			key:      key,
-			conflict: conflict,
-			value:    value,
-		}
-		m.Unlock()
-		return
-	}
-	if conflict != 0 && (conflict != item.conflict) {
-		m.Unlock()
-		return
-	}
-	m.data[key] = storeItem{
-		key:      key,
-		conflict: conflict,
-		value:    value,
-	}
+	m.data[key] = value
 	m.Unlock()
 }
 
-func (m *lockedMap) Del(key, conflict uint64) (uint64, interface{}) {
+func (m *lockedMap) Del(key uint64) interface{} {
 	m.Lock()
 	item, ok := m.data[key]
-	if !ok {
-		m.Unlock()
-		return 0, nil
+	if ok {
+		delete(m.data, key)
 	}
-	if conflict != 0 && (conflict != item.conflict) {
-		m.Unlock()
-		return 0, nil
-	}
-	delete(m.data, key)
 	m.Unlock()
-	return item.conflict, item.value
+	return item
 }
 
-func (m *lockedMap) Update(key, conflict uint64, value interface{}) bool {
+func (m *lockedMap) Update(key uint64, value interface{}) bool {
 	m.Lock()
-	item, ok := m.data[key]
-	if !ok {
+
+	if _, ok := m.data[key]; !ok {
 		m.Unlock()
 		return false
 	}
-	if conflict != 0 && (conflict != item.conflict) {
-		m.Unlock()
-		return false
-	}
-	m.data[key] = storeItem{
-		key:      key,
-		conflict: conflict,
-		value:    value,
-	}
+	m.data[key] = value
 	m.Unlock()
 	return true
 }
 
 func (m *lockedMap) Clear() {
 	m.Lock()
-	m.data = make(map[uint64]storeItem)
+	m.data = make(map[uint64]interface{})
 	m.Unlock()
 }

@@ -6,8 +6,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/dgraph-io/ristretto/z"
 )
 
 var wait time.Duration = time.Millisecond * 10
@@ -18,10 +16,6 @@ func TestCacheKeyToHash(t *testing.T) {
 		NumCounters: 100,
 		MaxCost:     10,
 		BufferItems: 64,
-		KeyToHash: func(key interface{}) (uint64, uint64) {
-			keyToHashCount++
-			return z.KeyToHash(key)
-		},
 	})
 	if err != nil {
 		panic(err)
@@ -40,13 +34,8 @@ func TestCacheKeyToHash(t *testing.T) {
 }
 
 func TestCacheMaxCost(t *testing.T) {
-	charset := "abcdefghijklmnopqrstuvwxyz0123456789"
-	key := func() []byte {
-		k := make([]byte, 2)
-		for i := range k {
-			k[i] = charset[rand.Intn(len(charset))]
-		}
-		return k
+	key := func() uint64 {
+		return uint64(rand.Intn(36 * 36))
 	}
 	c, err := NewCache(&Config{
 		NumCounters: 12960, // 36^2 * 10
@@ -133,7 +122,7 @@ func TestCacheProcessItems(t *testing.T) {
 		Cost: func(value interface{}) int64 {
 			return int64(value.(int))
 		},
-		OnEvict: func(key, conflict uint64, value interface{}, cost int64) {
+		OnEvict: func(key uint64, value interface{}, cost int64) {
 			m.Lock()
 			defer m.Unlock()
 			evicted[key] = struct{}{}
@@ -143,78 +132,60 @@ func TestCacheProcessItems(t *testing.T) {
 		panic(err)
 	}
 
-	var key uint64
-	var conflict uint64
-
-	key, conflict = z.KeyToHash(1)
 	c.setBuf <- &item{
-		flag:     itemNew,
-		key:      key,
-		conflict: conflict,
-		value:    1,
-		cost:     0,
+		flag:  itemNew,
+		key:   1,
+		value: 1,
+		cost:  0,
 	}
 	time.Sleep(wait)
 	if !c.policy.Has(1) || c.policy.Cost(1) != 1 {
 		t.Fatal("cache processItems didn't add new item")
 	}
-	key, conflict = z.KeyToHash(1)
 	c.setBuf <- &item{
-		flag:     itemUpdate,
-		key:      key,
-		conflict: conflict,
-		value:    2,
-		cost:     0,
+		flag:  itemUpdate,
+		key:   1,
+		value: 2,
+		cost:  0,
 	}
 	time.Sleep(wait)
 	if c.policy.Cost(1) != 2 {
 		t.Fatal("cache processItems didn't update item cost")
 	}
-	key, conflict = z.KeyToHash(1)
 	c.setBuf <- &item{
-		flag:     itemDelete,
-		key:      key,
-		conflict: conflict,
+		flag: itemDelete,
+		key:  1,
 	}
 	time.Sleep(wait)
-	key, conflict = z.KeyToHash(1)
-	if val, ok := c.store.Get(key, conflict); val != nil || ok {
+	if val, ok := c.store.Get(1); val != nil || ok {
 		t.Fatal("cache processItems didn't delete item")
 	}
 	if c.policy.Has(1) {
 		t.Fatal("cache processItems didn't delete item")
 	}
-	key, conflict = z.KeyToHash(2)
 	c.setBuf <- &item{
-		flag:     itemNew,
-		key:      key,
-		conflict: conflict,
-		value:    2,
-		cost:     3,
+		flag:  itemNew,
+		key:   2,
+		value: 2,
+		cost:  3,
 	}
-	key, conflict = z.KeyToHash(3)
 	c.setBuf <- &item{
-		flag:     itemNew,
-		key:      key,
-		conflict: conflict,
-		value:    3,
-		cost:     3,
+		flag:  itemNew,
+		key:   3,
+		value: 3,
+		cost:  3,
 	}
-	key, conflict = z.KeyToHash(4)
 	c.setBuf <- &item{
-		flag:     itemNew,
-		key:      key,
-		conflict: conflict,
-		value:    3,
-		cost:     3,
+		flag:  itemNew,
+		key:   5,
+		value: 3,
+		cost:  3,
 	}
-	key, conflict = z.KeyToHash(5)
 	c.setBuf <- &item{
-		flag:     itemNew,
-		key:      key,
-		conflict: conflict,
-		value:    3,
-		cost:     5,
+		flag:  itemNew,
+		key:   5,
+		value: 3,
+		cost:  5,
 	}
 	time.Sleep(wait)
 	m.Lock()
@@ -242,8 +213,7 @@ func TestCacheGet(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	key, conflict := z.KeyToHash(1)
-	c.store.Set(key, conflict, 1)
+	c.store.Set(1, 1)
 	if val, ok := c.Get(1); val == nil || !ok {
 		t.Fatal("get should be successful")
 	}
@@ -281,19 +251,17 @@ func TestCacheSet(t *testing.T) {
 		}
 	}
 	c.Set(1, 2, 2)
-	val, ok := c.store.Get(z.KeyToHash(1))
+	val, ok := c.store.Get(1)
 	if val == nil || val.(int) != 2 || !ok {
 		t.Fatal("set/update was unsuccessful")
 	}
 	c.stop <- struct{}{}
 	for i := 0; i < setBufSize; i++ {
-		key, conflict := z.KeyToHash(1)
 		c.setBuf <- &item{
-			flag:     itemUpdate,
-			key:      key,
-			conflict: conflict,
-			value:    1,
-			cost:     1,
+			flag:  itemUpdate,
+			key:   1,
+			value: 1,
+			cost:  1,
 		}
 	}
 	if c.Set(2, 2, 1) {
@@ -344,7 +312,7 @@ func TestCacheClear(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := uint64(0); i < 10; i++ {
 		c.Set(i, i, 1)
 	}
 	time.Sleep(wait)
@@ -355,7 +323,7 @@ func TestCacheClear(t *testing.T) {
 	if c.Metrics.KeysAdded() != 0 {
 		t.Fatal("clear didn't reset metrics")
 	}
-	for i := 0; i < 10; i++ {
+	for i := uint64(0); i < 10; i++ {
 		if val, ok := c.Get(i); val != nil || ok {
 			t.Fatal("clear didn't delete values")
 		}
@@ -372,7 +340,7 @@ func TestCacheMetrics(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	for i := 0; i < 10; i++ {
+	for i := uint64(0); i < 10; i++ {
 		c.Set(i, i, 1)
 	}
 	time.Sleep(wait)
