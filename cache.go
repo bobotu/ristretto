@@ -40,7 +40,7 @@ type Cache struct {
 	// store is the central concurrent hashmap where key-value items are stored
 	store store
 	// policy determines what gets let in to the cache and what gets kicked out
-	policy policy
+	policy *policy
 	// getBuf is a custom ring buffer implementation that gets pushed to when
 	// keys are read
 	getBuf *ringBuffer

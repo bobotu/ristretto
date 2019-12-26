@@ -29,39 +29,7 @@ const (
 	lfuSample = 5
 )
 
-// policy is the interface encapsulating eviction/admission behavior.
-//
-// TODO: remove this interface and just rename defaultPolicy to policy, as we
-//       are probably only going to use/implement/maintain one policy.
-type policy interface {
-	ringConsumer
-	// Add attempts to Add the key-cost pair to the Policy. It returns a slice
-	// of evicted keys and a bool denoting whether or not the key-cost pair
-	// was added. If it returns true, the key should be stored in cache.
-	Add(uint64, int64) ([]*item, bool)
-	// Has returns true if the key exists in the Policy.
-	Has(uint64) bool
-	// Del deletes the key from the Policy.
-	Del(uint64)
-	// Cap returns the available capacity.
-	Cap() int64
-	// Close stops all goroutines and closes all channels.
-	Close()
-	// Update updates the cost value for the key.
-	Update(uint64, int64)
-	// Cost returns the cost value of a key or -1 if missing.
-	Cost(uint64) int64
-	// Optionally, set stats object to track how policy is performing.
-	CollectMetrics(*Metrics)
-	// Clear zeroes out all counters and clears hashmaps.
-	Clear()
-}
-
-func newPolicy(numCounters, maxCost int64) policy {
-	return newDefaultPolicy(numCounters, maxCost)
-}
-
-type defaultPolicy struct {
+type policy struct {
 	sync.Mutex
 	admit   *tinyLFU
 	evict   *sampledLFU
@@ -70,8 +38,8 @@ type defaultPolicy struct {
 	metrics *Metrics
 }
 
-func newDefaultPolicy(numCounters, maxCost int64) *defaultPolicy {
-	p := &defaultPolicy{
+func newPolicy(numCounters, maxCost int64) *policy {
+	p := &policy{
 		admit:   newTinyLFU(numCounters),
 		evict:   newSampledLFU(maxCost),
 		itemsCh: make(chan []uint64, 3),
@@ -81,7 +49,7 @@ func newDefaultPolicy(numCounters, maxCost int64) *defaultPolicy {
 	return p
 }
 
-func (p *defaultPolicy) CollectMetrics(metrics *Metrics) {
+func (p *policy) CollectMetrics(metrics *Metrics) {
 	p.metrics = metrics
 	p.evict.metrics = metrics
 }
@@ -91,7 +59,7 @@ type policyPair struct {
 	cost int64
 }
 
-func (p *defaultPolicy) processItems() {
+func (p *policy) processItems() {
 	for {
 		select {
 		case items := <-p.itemsCh:
@@ -104,7 +72,7 @@ func (p *defaultPolicy) processItems() {
 	}
 }
 
-func (p *defaultPolicy) Push(keys []uint64) bool {
+func (p *policy) Push(keys []uint64) bool {
 	if len(keys) == 0 {
 		return true
 	}
@@ -118,7 +86,7 @@ func (p *defaultPolicy) Push(keys []uint64) bool {
 	}
 }
 
-func (p *defaultPolicy) Add(key uint64, cost int64) ([]*item, bool) {
+func (p *policy) Add(key uint64, cost int64) ([]*item, bool) {
 	p.Lock()
 	defer p.Unlock()
 	// can't add an item bigger than entire cache
@@ -187,33 +155,33 @@ func (p *defaultPolicy) Add(key uint64, cost int64) ([]*item, bool) {
 	return victims, true
 }
 
-func (p *defaultPolicy) Has(key uint64) bool {
+func (p *policy) Has(key uint64) bool {
 	p.Lock()
 	_, exists := p.evict.keyCosts[key]
 	p.Unlock()
 	return exists
 }
 
-func (p *defaultPolicy) Del(key uint64) {
+func (p *policy) Del(key uint64) {
 	p.Lock()
 	p.evict.del(key)
 	p.Unlock()
 }
 
-func (p *defaultPolicy) Cap() int64 {
+func (p *policy) Cap() int64 {
 	p.Lock()
 	capacity := int64(p.evict.maxCost - p.evict.used)
 	p.Unlock()
 	return capacity
 }
 
-func (p *defaultPolicy) Update(key uint64, cost int64) {
+func (p *policy) Update(key uint64, cost int64) {
 	p.Lock()
 	p.evict.updateIfHas(key, cost)
 	p.Unlock()
 }
 
-func (p *defaultPolicy) Cost(key uint64) int64 {
+func (p *policy) Cost(key uint64) int64 {
 	p.Lock()
 	if cost, found := p.evict.keyCosts[key]; found {
 		p.Unlock()
@@ -223,14 +191,14 @@ func (p *defaultPolicy) Cost(key uint64) int64 {
 	return -1
 }
 
-func (p *defaultPolicy) Clear() {
+func (p *policy) Clear() {
 	p.Lock()
 	p.admit.clear()
 	p.evict.clear()
 	p.Unlock()
 }
 
-func (p *defaultPolicy) Close() {
+func (p *policy) Close() {
 	// block until p.processItems goroutine is returned
 	p.stop <- struct{}{}
 	close(p.stop)
