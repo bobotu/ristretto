@@ -1,4 +1,4 @@
-module github.com/dgraph-io/ristretto
+module github.com/bobotu/ristretto
 
 go 1.12
 

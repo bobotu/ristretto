@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dgraph-io/ristretto/sim"
+	"github.com/bobotu/ristretto/sim"
 )
 
 func TestStressSetGet(t *testing.T) {
